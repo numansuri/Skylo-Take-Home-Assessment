@@ -55,10 +55,11 @@ async def run_pipeline():
     all_results = []
 
     print("[3/4] Running detection pipeline...")
+    total = len(df)
     for i, row in df.iterrows():
         t0 = time.time()
         detection = await agent.process_single(row.to_dict())
-        detection_latency = (time.time() - t0) * 1000
+        detection_ms = (time.time() - t0) * 1000
 
         result_row = row.to_dict()
         # Convert numpy types and NaN/None to JSON-safe Python types
@@ -74,9 +75,16 @@ async def run_pipeline():
         result_row["is_anomaly"] = detection.is_anomaly
         all_results.append(result_row)
 
+        # Progress logging for every point
+        status = "ANOMALY" if detection.is_anomaly else "ok"
+        print(f"      [{i+1:>3}/{total}] t={i:>3} detection={detection_ms:>7.1f}ms  {status}", end="", flush=True)
+
         if detection.is_anomaly:
             anomalies_detected += 1
+            t1 = time.time()
             interpretation = await interpret_anomaly(detection)
+            interp_ms = (time.time() - t1) * 1000
+            print(f"  → interpretation={interp_ms:>7.1f}ms", end="", flush=True)
 
             entry = AnomalyLogEntry(
                 timestamp=detection.timestamp,
@@ -98,7 +106,9 @@ async def run_pipeline():
                 f.write(entry.model_dump_json() + "\n")
 
             severity_str = detection.severity.value if hasattr(detection.severity, "value") else detection.severity
-            print(f"      [{severity_str.upper():>8}] t={i:>3} {detection.timestamp} — {detection.triggered_metrics}")
+            print(f"  [{severity_str.upper()}]", flush=True)
+        else:
+            print(flush=True)
 
     # Write full telemetry for dashboard
     Path("logs/telemetry_run.json").write_text(
