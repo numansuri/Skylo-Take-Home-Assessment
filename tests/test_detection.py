@@ -117,3 +117,52 @@ class TestDetectionAgent:
         result = run_async(_run())
         if result.is_anomaly:
             assert len(result.triggered_metrics) > 0
+
+
+class TestBatchProcessing:
+    def test_batch_returns_list_of_detection_results(self, fitted_agent, telemetry_df):
+        results = fitted_agent.process_batch(telemetry_df)
+        assert isinstance(results, list)
+        assert len(results) == len(telemetry_df)
+        assert all(isinstance(r, DetectionResult) for r in results)
+
+    def test_batch_detects_handover_failure(self, fitted_agent, telemetry_df):
+        results = fitted_agent.process_batch(telemetry_df)
+        hf_anomalies = [r for i, r in enumerate(results) if 120 <= i <= 140 and r.is_anomaly]
+        assert len(hf_anomalies) > 0, "No anomalies detected in handover failure window"
+
+    def test_batch_detects_congestion_drift(self, fitted_agent, telemetry_df):
+        results = fitted_agent.process_batch(telemetry_df)
+        cd_anomalies = [r for i, r in enumerate(results) if 250 <= i <= 290 and r.is_anomaly]
+        assert len(cd_anomalies) > 0, "No anomalies detected in congestion drift window"
+
+    def test_batch_normal_points_mostly_not_anomalous(self, fitted_agent, telemetry_df):
+        results = fitted_agent.process_batch(telemetry_df)
+        normal_indices = telemetry_df.index[~telemetry_df["injected_anomaly"]].tolist()
+        false_positives = sum(1 for i in normal_indices[:30] if results[i].is_anomaly)
+        assert false_positives < 10, f"Too many false positives: {false_positives}/30"
+
+    def test_batch_matches_single_processing(self, fitted_agent, telemetry_df):
+        """Batch results must match sequential process_single results exactly."""
+        import asyncio
+
+        batch_results = fitted_agent.process_batch(telemetry_df)
+
+        # Reset agent state and run sequentially for comparison
+        agent2 = DetectionAgent()
+        agent2.fit_warmup(telemetry_df.head(60))
+
+        async def run_sequential():
+            results = []
+            for _, row in telemetry_df.iterrows():
+                r = await agent2.process_single(row.to_dict())
+                results.append(r)
+            return results
+
+        sequential_results = asyncio.run(run_sequential())
+
+        for i in range(len(telemetry_df)):
+            assert batch_results[i].is_anomaly == sequential_results[i].is_anomaly, \
+                f"Mismatch at index {i}: batch={batch_results[i].is_anomaly}, seq={sequential_results[i].is_anomaly}"
+            assert batch_results[i].severity == sequential_results[i].severity, \
+                f"Severity mismatch at index {i}"

@@ -224,3 +224,89 @@ class DetectionAgent:
             severity=severity,
             triggered_metrics=triggered,
         )
+
+    def process_batch(self, df: pd.DataFrame) -> list[DetectionResult]:
+        """Process all data points using vectorized operations. No LLM calls.
+
+        Replaces the per-point process_single() loop with batch sklearn scoring
+        and vectorized EWMA z-score computation.
+        """
+        n = len(df)
+        timestamps = df["timestamp"].tolist()
+        latency = df["latency_ms"].values.astype(float)
+        packet_loss = df["packet_loss_pct"].values.astype(float)
+        rsrp = df["rsrp_dbm"].values.astype(float)
+
+        # --- Batch IsolationForest scoring ---
+        features = np.column_stack([latency, packet_loss, rsrp])
+        scaled = self.scaler.transform(features)
+        raw_iso_scores = self.model.score_samples(scaled)
+        iso_scores = (raw_iso_scores - self._baseline_mean) / self._baseline_std
+
+        # --- Vectorized EWMA z-scores ---
+        zscores = {}
+        for col in ["latency_ms", "packet_loss_pct", "rsrp_dbm"]:
+            # Prepend warm-up history so EWMA state is correct
+            history = self._ewma_histories[col].copy()
+            full_series = pd.Series(history + df[col].tolist())
+            ewma_mean = full_series.ewm(span=self.ewma_span, adjust=False).mean()
+            ewma_std = full_series.ewm(span=self.ewma_span, adjust=False).std()
+            ewma_std = ewma_std.replace(0, 1e-6).fillna(1e-6)
+
+            # Slice off the warm-up prefix to get z-scores for the actual data
+            offset = len(history)
+            values = full_series.values[offset:]
+            means = ewma_mean.values[offset:]
+            stds = ewma_std.values[offset:]
+            zscores[col] = np.round((values - means) / stds, 4)
+
+        # --- Vectorized anomaly flags + severity ---
+        abs_z_latency = np.abs(zscores["latency_ms"])
+        abs_z_packet_loss = np.abs(zscores["packet_loss_pct"])
+        abs_z_rsrp = np.abs(zscores["rsrp_dbm"])
+        max_abs_z = np.maximum(np.maximum(abs_z_latency, abs_z_packet_loss), abs_z_rsrp)
+
+        is_anomaly = (iso_scores < -2.5) | (max_abs_z > 2.5)
+
+        # --- Build results ---
+        results = []
+        for i in range(n):
+            iso = round(float(iso_scores[i]), 6)
+            maz = float(max_abs_z[i])
+
+            if iso < -4.0 and maz > 2.5:
+                severity = SeverityLevel.CRITICAL
+            elif iso < -4.0 or (iso < -2.5 and maz > 2.5):
+                severity = SeverityLevel.HIGH
+            elif iso < -2.5 or maz > 2.5:
+                severity = SeverityLevel.MEDIUM
+            else:
+                severity = SeverityLevel.LOW
+
+            triggered = []
+            if abs_z_latency[i] > 2.5:
+                triggered.append("latency_ms")
+            if abs_z_packet_loss[i] > 2.5:
+                triggered.append("packet_loss_pct")
+            if abs_z_rsrp[i] > 2.5:
+                triggered.append("rsrp_dbm")
+
+            results.append(DetectionResult(
+                timestamp=timestamps[i],
+                latency_ms=float(latency[i]),
+                packet_loss_pct=float(packet_loss[i]),
+                rsrp_dbm=float(rsrp[i]),
+                isolation_score=iso,
+                ewma_zscore_latency=float(zscores["latency_ms"][i]),
+                ewma_zscore_packet_loss=float(zscores["packet_loss_pct"][i]),
+                ewma_zscore_rsrp=float(zscores["rsrp_dbm"][i]),
+                is_anomaly=bool(is_anomaly[i]),
+                severity=severity,
+                triggered_metrics=triggered,
+            ))
+
+        # Update EWMA histories so subsequent calls have correct state
+        for col in ["latency_ms", "packet_loss_pct", "rsrp_dbm"]:
+            self._ewma_histories[col].extend(df[col].tolist())
+
+        return results
