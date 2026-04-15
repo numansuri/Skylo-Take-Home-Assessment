@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SKYLO | RAN Anomaly Detection Engine</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: #0a0e1a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+
+        /* --- Header --- */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 32px;
+            background: linear-gradient(135deg, #111827 0%, #1a1f35 100%);
+            border-bottom: 1px solid #1e293b;
+        }
+        .header-left { display: flex; align-items: center; gap: 16px; }
+        .logo {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: #fff;
+        }
+        .logo span { color: #3b82f6; }
+        .subtitle {
+            font-size: 13px;
+            color: #94a3b8;
+            font-weight: 400;
+            border-left: 1px solid #334155;
+            padding-left: 16px;
+        }
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            background: #14532d22;
+            border: 1px solid #16a34a44;
+            font-size: 12px;
+            font-weight: 600;
+            color: #4ade80;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .status-dot {
+            width: 8px; height: 8px;
+            background: #4ade80;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 #4ade8066; }
+            50% { opacity: 0.7; box-shadow: 0 0 0 6px #4ade8000; }
+        }
+
+        /* --- Layout --- */
+        .container { max-width: 1400px; margin: 0 auto; padding: 24px 32px; }
+
+        /* --- Stats Row --- */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: #111827;
+            border: 1px solid #1e293b;
+            border-radius: 12px;
+            padding: 20px 24px;
+            transition: all 0.2s ease;
+        }
+        .stat-card:hover {
+            border-color: #334155;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px #0005;
+        }
+        .stat-label {
+            font-size: 12px;
+            font-weight: 500;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            color: #f1f5f9;
+        }
+        .stat-value.critical { color: #ef4444; }
+        .stat-value.high { color: #f59e0b; }
+        .stat-value.cost { color: #10b981; }
+        .stat-sub {
+            font-size: 11px;
+            color: #475569;
+            margin-top: 4px;
+        }
+
+        /* --- Chart Section --- */
+        .chart-container {
+            background: #111827;
+            border: 1px solid #1e293b;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .chart-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #e2e8f0;
+            margin-bottom: 16px;
+        }
+        .chart-wrapper { position: relative; height: 320px; }
+
+        /* --- Two-column row --- */
+        .split-row {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        /* --- Severity Breakdown --- */
+        .severity-chart-wrapper { position: relative; height: 200px; }
+
+        /* --- Table --- */
+        .table-container {
+            background: #111827;
+            border: 1px solid #1e293b;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .table-header-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 24px;
+            border-bottom: 1px solid #1e293b;
+        }
+        .table-scroll { max-height: 420px; overflow-y: auto; }
+        .table-scroll::-webkit-scrollbar { width: 6px; }
+        .table-scroll::-webkit-scrollbar-track { background: #0a0e1a; }
+        .table-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+
+        table { width: 100%; border-collapse: collapse; }
+        thead { position: sticky; top: 0; z-index: 1; }
+        th {
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: #111827;
+            border-bottom: 1px solid #1e293b;
+        }
+        td {
+            padding: 12px 16px;
+            font-size: 13px;
+            color: #cbd5e1;
+            border-bottom: 1px solid #1e293b0a;
+        }
+        tr:hover td { background: #1e293b33; }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-critical { background: #7f1d1d; color: #fca5a5; border: 1px solid #ef4444; }
+        .badge-high { background: #78350f; color: #fcd34d; border: 1px solid #f59e0b; }
+        .badge-medium { background: #1e3a5f; color: #93c5fd; border: 1px solid #3b82f6; }
+        .badge-low { background: #14532d; color: #6ee7b7; border: 1px solid #10b981; }
+
+        .metrics-list {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+        .metric-tag {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            background: #1e293b;
+            color: #94a3b8;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+        }
+
+        /* --- Footer --- */
+        .footer {
+            text-align: center;
+            padding: 24px;
+            color: #475569;
+            font-size: 12px;
+            border-top: 1px solid #1e293b;
+            margin-top: 32px;
+        }
+        .footer a { color: #3b82f6; text-decoration: none; }
+
+        /* --- Error state --- */
+        .error-banner {
+            background: linear-gradient(135deg, #1a0a0a, #1a1020);
+            border: 1px solid #ef444444;
+            border-radius: 12px;
+            padding: 32px;
+            text-align: center;
+            margin-bottom: 24px;
+            display: none;
+        }
+        .error-banner.visible { display: block; }
+        .error-banner h3 { color: #fca5a5; margin-bottom: 12px; font-size: 18px; }
+        .error-banner p { color: #94a3b8; font-size: 14px; margin-bottom: 16px; }
+        .copy-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            color: #e2e8f0;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .copy-btn:hover { background: #334155; border-color: #475569; }
+        .copy-btn:active { transform: scale(0.98); }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+            .split-row { grid-template-columns: 1fr; }
+            .container { padding: 16px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+    <div class="header-left">
+        <div class="logo">SKYLO <span>|</span> RAN Anomaly Detection</div>
+        <div class="subtitle">Network Telemetry Monitoring Dashboard</div>
+    </div>
+    <div class="status-pill">
+        <div class="status-dot"></div>
+        Monitoring
+    </div>
+</header>
+
+<div class="container">
+
+    <!-- Error Banner -->
+    <div class="error-banner" id="errorBanner">
+        <h3>API Not Connected</h3>
+        <p>The backend API is not running. Start it with:</p>
+        <button class="copy-btn" onclick="copyCommand()">
+            uvicorn src.api:app --reload
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        </button>
+        <p style="margin-top:12px; font-size:12px; color:#64748b;">Then open this file in your browser</p>
+    </div>
+
+    <!-- Stats Row -->
+    <div class="stats-row">
+        <div class="stat-card">
+            <div class="stat-label">Total Anomalies</div>
+            <div class="stat-value" id="totalAnomalies">—</div>
+            <div class="stat-sub">Detected across full telemetry window</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Critical</div>
+            <div class="stat-value critical" id="criticalCount">—</div>
+            <div class="stat-sub">Immediate operator attention required</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">High Severity</div>
+            <div class="stat-value high" id="highCount">—</div>
+            <div class="stat-sub">Elevated risk — monitor closely</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Detection Cost</div>
+            <div class="stat-value cost" id="detectionCost">—</div>
+            <div class="stat-sub">LLM interpretation only (detection is $0)</div>
+        </div>
+    </div>
+
+    <!-- Telemetry Chart -->
+    <div class="chart-container">
+        <div class="chart-title">Telemetry Time Series — Latency / Packet Loss / RSRP</div>
+        <div class="chart-wrapper">
+            <canvas id="telemetryChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Split: Severity + Table -->
+    <div class="split-row">
+        <div class="chart-container">
+            <div class="chart-title">Severity Breakdown</div>
+            <div class="severity-chart-wrapper">
+                <canvas id="severityChart"></canvas>
+            </div>
+        </div>
+        <div class="table-container">
+            <div class="table-header-bar">
+                <div class="chart-title" style="margin:0">Anomaly Log</div>
+                <div style="font-size:12px; color:#64748b;" id="tableCount"></div>
+            </div>
+            <div class="table-scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Severity</th>
+                            <th>Affected Metrics</th>
+                            <th>Reason</th>
+                            <th>ISO Score</th>
+                            <th>Operator Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="anomalyTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Footer -->
+<footer class="footer">
+    Powered by <a href="https://openai.github.io/openai-agents-python/">OpenAI Agents SDK</a> + IsolationForest + EWMA
+    &nbsp;·&nbsp; Built for Skylo Technologies
+</footer>
+
+<script>
+const API_BASE = "http://localhost:8000";
+
+const severityColors = {
+    critical: { bg: "#7f1d1d", text: "#fca5a5", border: "#ef4444", chart: "#ef4444" },
+    high:     { bg: "#78350f", text: "#fcd34d", border: "#f59e0b", chart: "#f59e0b" },
+    medium:   { bg: "#1e3a5f", text: "#93c5fd", border: "#3b82f6", chart: "#3b82f6" },
+    low:      { bg: "#14532d", text: "#6ee7b7", border: "#10b981", chart: "#10b981" },
+};
+
+let telemetryChartInstance = null;
+let severityChartInstance = null;
+
+function copyCommand() {
+    navigator.clipboard.writeText("uvicorn src.api:app --reload");
+    const btn = document.querySelector('.copy-btn');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '✓ Copied!';
+    setTimeout(() => btn.innerHTML = orig, 1500);
+}
+
+function formatTimestamp(ts) {
+    return ts ? ts.split("T")[1]?.substring(0, 8) || ts : "—";
+}
+
+function renderStats(anomalies, health) {
+    document.getElementById("totalAnomalies").textContent = health.anomaly_count || 0;
+    document.getElementById("criticalCount").textContent = health.by_severity?.critical || 0;
+    document.getElementById("highCount").textContent = health.by_severity?.high || 0;
+    const cost = (health.anomaly_count || 0) * 200 * 0.75 / 1_000_000;
+    document.getElementById("detectionCost").textContent = "$" + cost.toFixed(4);
+}
+
+function renderTelemetryChart(telemetry, anomalies) {
+    const ctx = document.getElementById("telemetryChart").getContext("2d");
+    const data = telemetry.data || [];
+    if (data.length === 0) return;
+
+    const labels = data.map((d, i) => formatTimestamp(d.timestamp));
+    const latencies = data.map(d => d.latency_ms);
+    const packetLoss = data.map(d => d.packet_loss_pct * 100); // scale for visibility
+    const rsrp = data.map(d => d.rsrp_dbm);
+
+    // Mark anomaly points
+    const anomalyIndices = new Set();
+    data.forEach((d, i) => { if (d.is_anomaly) anomalyIndices.add(i); });
+
+    const latencyPoints = latencies.map((v, i) => anomalyIndices.has(i) ? 5 : 0);
+    const plPoints = packetLoss.map((v, i) => anomalyIndices.has(i) ? 5 : 0);
+
+    // Anomaly band backgrounds
+    const anomalyBands = [];
+    let bandStart = null;
+    data.forEach((d, i) => {
+        if (d.is_anomaly && bandStart === null) bandStart = i;
+        if (!d.is_anomaly && bandStart !== null) {
+            anomalyBands.push({ start: bandStart, end: i - 1 });
+            bandStart = null;
+        }
+    });
+    if (bandStart !== null) anomalyBands.push({ start: bandStart, end: data.length - 1 });
+
+    // Custom plugin for anomaly bands
+    const anomalyBandPlugin = {
+        id: 'anomalyBands',
+        beforeDraw(chart) {
+            const { ctx, chartArea, scales } = chart;
+            if (!chartArea) return;
+            ctx.save();
+            ctx.fillStyle = 'rgba(239, 68, 68, 0.08)';
+            anomalyBands.forEach(band => {
+                const x1 = scales.x.getPixelForValue(band.start);
+                const x2 = scales.x.getPixelForValue(band.end);
+                ctx.fillRect(x1, chartArea.top, x2 - x1 + 4, chartArea.bottom - chartArea.top);
+            });
+            ctx.restore();
+        }
+    };
+
+    if (telemetryChartInstance) telemetryChartInstance.destroy();
+
+    telemetryChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'Latency (ms)',
+                    data: latencies,
+                    borderColor: '#3b82f6',
+                    backgroundColor: '#3b82f622',
+                    borderWidth: 1.5,
+                    tension: 0.4,
+                    pointRadius: latencyPoints,
+                    pointBackgroundColor: '#ef4444',
+                    yAxisID: 'y',
+                    fill: false,
+                },
+                {
+                    label: 'Packet Loss (×100)',
+                    data: packetLoss,
+                    borderColor: '#f59e0b',
+                    backgroundColor: '#f59e0b22',
+                    borderWidth: 1.5,
+                    tension: 0.4,
+                    pointRadius: plPoints,
+                    pointBackgroundColor: '#ef4444',
+                    yAxisID: 'y',
+                    fill: false,
+                },
+                {
+                    label: 'RSRP (dBm)',
+                    data: rsrp,
+                    borderColor: '#10b981',
+                    backgroundColor: '#10b98122',
+                    borderWidth: 1.5,
+                    tension: 0.4,
+                    pointRadius: 0,
+                    yAxisID: 'y1',
+                    fill: false,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: {
+                legend: {
+                    labels: { color: '#94a3b8', font: { family: 'Inter', size: 12 }, usePointStyle: true, pointStyle: 'line' },
+                },
+                tooltip: {
+                    backgroundColor: '#1e293b',
+                    titleColor: '#f1f5f9',
+                    bodyColor: '#cbd5e1',
+                    borderColor: '#334155',
+                    borderWidth: 1,
+                    titleFont: { family: 'Inter' },
+                    bodyFont: { family: 'Inter' },
+                },
+            },
+            scales: {
+                x: {
+                    ticks: { color: '#475569', font: { size: 10 }, maxTicksLimit: 20 },
+                    grid: { color: '#1e293b' },
+                },
+                y: {
+                    position: 'left',
+                    title: { display: true, text: 'Latency (ms) / PL×100', color: '#64748b', font: { size: 11 } },
+                    ticks: { color: '#475569', font: { size: 10 } },
+                    grid: { color: '#1e293b44' },
+                },
+                y1: {
+                    position: 'right',
+                    title: { display: true, text: 'RSRP (dBm)', color: '#64748b', font: { size: 11 } },
+                    ticks: { color: '#475569', font: { size: 10 } },
+                    grid: { drawOnChartArea: false },
+                },
+            },
+        },
+        plugins: [anomalyBandPlugin],
+    });
+}
+
+function renderSeverityChart(health) {
+    const ctx = document.getElementById("severityChart").getContext("2d");
+    const counts = health.by_severity || {};
+    const labels = ['Critical', 'High', 'Medium', 'Low'];
+    const values = [counts.critical || 0, counts.high || 0, counts.medium || 0, counts.low || 0];
+    const colors = ['#ef4444', '#f59e0b', '#3b82f6', '#10b981'];
+
+    if (severityChartInstance) severityChartInstance.destroy();
+
+    severityChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                data: values,
+                backgroundColor: colors.map(c => c + '44'),
+                borderColor: colors,
+                borderWidth: 1.5,
+                borderRadius: 6,
+            }],
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: {
+                    ticks: { color: '#475569', stepSize: 1, font: { size: 11 } },
+                    grid: { color: '#1e293b44' },
+                },
+                y: {
+                    ticks: { color: '#94a3b8', font: { size: 12, weight: 500 } },
+                    grid: { display: false },
+                },
+            },
+        },
+    });
+}
+
+function renderTable(anomalies) {
+    const tbody = document.getElementById("anomalyTableBody");
+    document.getElementById("tableCount").textContent = `${anomalies.length} entries`;
+
+    if (anomalies.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:32px;color:#475569;">No anomalies detected yet. Run main.py first.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = anomalies.map(a => `
+        <tr>
+            <td style="font-family:monospace;font-size:12px;white-space:nowrap;">${formatTimestamp(a.timestamp)}</td>
+            <td><span class="badge badge-${a.severity}">${a.severity}</span></td>
+            <td>
+                <div class="metrics-list">
+                    ${(a.affected_metrics || []).map(m => `<span class="metric-tag">${m}</span>`).join('')}
+                </div>
+            </td>
+            <td style="max-width:280px;font-size:12px;color:#94a3b8;">${a.reason}</td>
+            <td style="font-family:monospace;font-size:12px;">${a.isolation_score?.toFixed(4) || '—'}</td>
+            <td style="max-width:220px;font-size:12px;color:#94a3b8;">${a.operator_action}</td>
+        </tr>
+    `).join('');
+}
+
+function renderDashboard(anomalies, health, telemetry) {
+    document.getElementById("errorBanner").classList.remove("visible");
+    renderStats(anomalies, health);
+    renderTelemetryChart(telemetry, anomalies);
+    renderSeverityChart(health);
+    renderTable(anomalies);
+}
+
+async function loadData() {
+    try {
+        const [anomalies, health, telemetry] = await Promise.all([
+            fetch(`${API_BASE}/anomalies`).then(r => r.json()),
+            fetch(`${API_BASE}/health`).then(r => r.json()),
+            fetch(`${API_BASE}/telemetry`).then(r => r.json()),
+        ]);
+        renderDashboard(anomalies, health, telemetry);
+    } catch (err) {
+        document.getElementById("errorBanner").classList.add("visible");
+        console.warn("API not reachable:", err.message);
+    }
+}
+
+// Auto-refresh every 10 seconds
+setInterval(loadData, 10000);
+loadData();
+</script>
+</body>
+</html>
