@@ -4,6 +4,8 @@ Receives ONLY confirmed anomalies (is_anomaly=True) from the detection pipeline.
 Uses GPT-5.4 mini via the OpenAI Agents SDK for grounded natural language interpretation.
 """
 
+import asyncio
+
 from agents import Agent, Runner
 from src.models import DetectionResult, AnomalyInterpretation
 
@@ -61,8 +63,6 @@ async def interpret_anomalies_parallel(
 
     Uses asyncio.Semaphore to cap concurrent OpenAI API calls.
     """
-    import asyncio
-
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def rate_limited_interpret(detection: DetectionResult) -> AnomalyInterpretation:

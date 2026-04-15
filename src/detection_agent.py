@@ -1,108 +1,18 @@
-"""Deterministic anomaly detection using IsolationForest + EWMA, orchestrated via OpenAI Agents SDK.
+"""Deterministic anomaly detection using IsolationForest + EWMA.
 
-The Agents SDK handles tool registration, orchestration, and structured output.
-All actual computation is pure sklearn + pandas — no LLM reasoning in the detection path.
+All computation is pure sklearn + pandas — no LLM in the detection path.
 """
 
-import json
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
-from agents import Agent, Runner, function_tool
 
 from src.models import DetectionResult, SeverityLevel
 
 
-# ---------------------------------------------------------------------------
-# Module-level state (populated by DetectionAgent.fit_warmup)
-# ---------------------------------------------------------------------------
-_scaler: StandardScaler | None = None
-_model: IsolationForest | None = None
-_baseline_mean: float = 0.0
-_baseline_std: float = 1.0
-
-
-# ---------------------------------------------------------------------------
-# Agents SDK function tools — pure deterministic computation
-# ---------------------------------------------------------------------------
-@function_tool
-def run_isolation_forest(
-    latency_ms: float,
-    packet_loss_pct: float,
-    rsrp_dbm: float,
-) -> str:
-    """Run IsolationForest scoring on a single telemetry data point.
-    Returns the normalized anomaly score (negative = more anomalous, 0 = baseline mean)."""
-    if _scaler is None or _model is None:
-        return json.dumps({"error": "Model not fitted yet"})
-    point = np.array([[latency_ms, packet_loss_pct, rsrp_dbm]])
-    scaled = _scaler.transform(point)
-    raw_score = float(_model.score_samples(scaled)[0])
-    # Normalize: z-score relative to warm-up baseline
-    norm_score = (raw_score - _baseline_mean) / _baseline_std if _baseline_std > 0 else 0.0
-    return json.dumps({"isolation_score": round(norm_score, 6)})
-
-
-@function_tool
-def run_ewma_detection(
-    metric_name: str,
-    current_value: float,
-    ewma_mean: float,
-    ewma_std: float,
-) -> str:
-    """Compute EWMA z-score for a single metric.
-    Returns z-score — flag if |z| > 2.5."""
-    if ewma_std == 0:
-        return json.dumps({"zscore": 0.0})
-    zscore = (current_value - ewma_mean) / ewma_std
-    return json.dumps({"zscore": round(zscore, 4)})
-
-
-@function_tool
-def compute_severity(
-    isolation_score: float,
-    max_ewma_zscore: float,
-) -> str:
-    """Compute deterministic severity tier from normalized IF score and max EWMA z-score.
-    isolation_score is z-scored: negative values are more anomalous than baseline.
-    Returns: 'critical', 'high', 'medium', or 'low'."""
-    # Severity uses both IF score and EWMA z-score as complementary signals.
-    # Critical requires extreme IF outlier AND multi-metric EWMA trigger.
-    if isolation_score < -4.0 and max_ewma_zscore > 2.5:
-        return "critical"
-    elif isolation_score < -4.0 or (isolation_score < -2.5 and max_ewma_zscore > 2.5):
-        return "high"
-    elif isolation_score < -2.5 or max_ewma_zscore > 2.5:
-        return "medium"
-    else:
-        return "low"
-
-
-# ---------------------------------------------------------------------------
-# Agent definition — uses gpt-5.4-mini purely for tool orchestration
-# ---------------------------------------------------------------------------
-detection_agent = Agent(
-    name="RAN Detection Agent",
-    instructions="""You are a deterministic anomaly detection engine for satellite RAN telemetry.
-You MUST use your tools to compute anomaly scores — do not reason about the data yourself.
-
-Workflow:
-1. Call run_isolation_forest with the current data point values (latency_ms, packet_loss_pct, rsrp_dbm)
-2. Call run_ewma_detection for each of the three metrics (latency_ms, packet_loss_pct, rsrp_dbm) using the provided EWMA state
-3. Call compute_severity with the isolation score and the maximum absolute z-score
-4. Return a structured DetectionResult with all computed values
-
-is_anomaly is True if isolation_score < -2.5 OR any |ewma_zscore| > 2.5.
-triggered_metrics should list any metric where |ewma_zscore| > 2.5.""",
-    tools=[run_isolation_forest, run_ewma_detection, compute_severity],
-    output_type=DetectionResult,
-    model="gpt-5.4-mini",
-)
-
-
 class DetectionAgent:
-    """Wraps the Agents SDK detection agent with sklearn model state and EWMA tracking."""
+    """Anomaly detection using IsolationForest + EWMA z-scores."""
 
     def __init__(self):
         self.scaler = StandardScaler()
@@ -124,13 +34,10 @@ class DetectionAgent:
 
     def fit_warmup(self, warmup_df: pd.DataFrame) -> None:
         """Fit IsolationForest and StandardScaler on the warm-up window."""
-        global _scaler, _model, _baseline_mean, _baseline_std
         features = warmup_df[["latency_ms", "packet_loss_pct", "rsrp_dbm"]].values
         self.scaler.fit(features)
         scaled = self.scaler.transform(features)
         self.model.fit(scaled)
-        _scaler = self.scaler
-        _model = self.model
 
         # Compute baseline score distribution for normalization
         baseline_scores = self.model.score_samples(scaled)
@@ -138,8 +45,6 @@ class DetectionAgent:
         self._baseline_std = float(np.std(baseline_scores))
         if self._baseline_std < 1e-10:
             self._baseline_std = 1.0
-        _baseline_mean = self._baseline_mean
-        _baseline_std = self._baseline_std
 
         # Seed EWMA histories with warm-up data
         for col in ["latency_ms", "packet_loss_pct", "rsrp_dbm"]:
@@ -173,7 +78,7 @@ class DetectionAgent:
         self._ewma_histories["packet_loss_pct"].append(packet_loss)
         self._ewma_histories["rsrp_dbm"].append(rsrp)
 
-        # Pre-compute values for the agent (and for fallback)
+        # Pre-compute EWMA z-scores
         ewma_states = {}
         zscores = {}
         for metric in ["latency_ms", "packet_loss_pct", "rsrp_dbm"]:
@@ -184,8 +89,8 @@ class DetectionAgent:
 
         # Compute normalized isolation score
         point = np.array([[latency, packet_loss, rsrp]])
-        scaled = _scaler.transform(point)
-        raw_iso_score = float(_model.score_samples(scaled)[0])
+        scaled = self.scaler.transform(point)
+        raw_iso_score = float(self.model.score_samples(scaled)[0])
         iso_score = self._normalize_iso_score(raw_iso_score)
 
         # Determine anomaly status
