@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 
 from src.simulator import generate_telemetry
 from src.detection_agent import DetectionAgent
-from src.interpretation_agent import interpret_anomaly
+from src.interpretation_agent import interpret_anomalies_parallel
 from src.models import AnomalyLogEntry
 
 load_dotenv()
@@ -51,18 +51,19 @@ async def run_pipeline():
     print("      Model fitted. Scaler + IF ready.")
     print()
 
-    anomalies_detected = 0
+    print("[3/4] Running batch detection pipeline...")
+    t0 = time.time()
+    detections = agent.process_batch(df)
+    detection_ms = (time.time() - t0) * 1000
+    anomaly_detections = [(i, d) for i, d in enumerate(detections) if d.is_anomaly]
+    print(f"      {len(df)} points scored in {detection_ms:.1f}ms")
+    print(f"      {len(anomaly_detections)} anomalies detected")
+    print()
+
+    # Build telemetry results for dashboard
     all_results = []
-
-    print("[3/4] Running detection pipeline...")
-    total = len(df)
-    for i, row in df.iterrows():
-        t0 = time.time()
-        detection = await agent.process_single(row.to_dict())
-        detection_ms = (time.time() - t0) * 1000
-
+    for i, (_, row) in enumerate(df.iterrows()):
         result_row = row.to_dict()
-        # Convert numpy types and NaN/None to JSON-safe Python types
         for k, v in list(result_row.items()):
             if hasattr(v, "item"):
                 result_row[k] = v.item()
@@ -71,20 +72,24 @@ async def run_pipeline():
                     result_row[k] = None
             except (TypeError, ValueError):
                 pass
-        result_row["isolation_score"] = detection.isolation_score
-        result_row["is_anomaly"] = detection.is_anomaly
+        result_row["isolation_score"] = detections[i].isolation_score
+        result_row["is_anomaly"] = detections[i].is_anomaly
         all_results.append(result_row)
 
-        # Progress logging for every point
-        status = "ANOMALY" if detection.is_anomaly else "ok"
-        print(f"      [{i+1:>3}/{total}] t={i:>3} detection={detection_ms:>7.1f}ms  {status}", end="", flush=True)
+    # Parallel interpretation of all anomalies
+    if anomaly_detections:
+        print(f"[3b/4] Interpreting {len(anomaly_detections)} anomalies in parallel...")
+        t1 = time.time()
+        anomaly_dets = [d for _, d in anomaly_detections]
+        interpretations = await interpret_anomalies_parallel(anomaly_dets)
+        interp_ms = (time.time() - t1) * 1000
+        print(f"       {len(interpretations)} interpretations in {interp_ms:.1f}ms")
+        print()
 
-        if detection.is_anomaly:
-            anomalies_detected += 1
-            t1 = time.time()
-            interpretation = await interpret_anomaly(detection)
-            interp_ms = (time.time() - t1) * 1000
-            print(f"  → interpretation={interp_ms:>7.1f}ms", end="", flush=True)
+        # Write anomaly log entries
+        for (idx, detection), interpretation in zip(anomaly_detections, interpretations):
+            severity_str = detection.severity.value if hasattr(detection.severity, "value") else detection.severity
+            print(f"      t={idx:>3} [{severity_str.upper()}] {interpretation.likely_cause}")
 
             entry = AnomalyLogEntry(
                 timestamp=detection.timestamp,
@@ -100,15 +105,10 @@ async def run_pipeline():
                     "rsrp_dbm": detection.rsrp_dbm,
                 },
                 interpretation_model="gpt-5.4-mini",
-                detection_latency_ms=round(detection_latency, 2),
+                detection_latency_ms=round(detection_ms / len(df), 2),
             )
             with open(LOG_PATH, "a") as f:
                 f.write(entry.model_dump_json() + "\n")
-
-            severity_str = detection.severity.value if hasattr(detection.severity, "value") else detection.severity
-            print(f"  [{severity_str.upper()}]", flush=True)
-        else:
-            print(flush=True)
 
     # Write full telemetry for dashboard
     Path("logs/telemetry_run.json").write_text(
@@ -116,12 +116,14 @@ async def run_pipeline():
     )
 
     # Summary
+    anomalies_detected = len(anomaly_detections)
     cost_estimate = anomalies_detected * 200 * 0.75 / 1_000_000
     print()
     print("[4/4] Pipeline complete")
     print("=" * 55)
     print(f"  Total data points:    {len(df)}")
     print(f"  Anomalies detected:   {anomalies_detected}")
+    print(f"  Detection time:       {detection_ms:.1f}ms")
     print(f"  Estimated LLM cost:   ${cost_estimate:.6f}")
     print(f"  Log file:             logs/anomalies.jsonl")
     print(f"  Telemetry file:       logs/telemetry_run.json")

@@ -51,3 +51,23 @@ async def interpret_anomaly(detection: DetectionResult) -> AnomalyInterpretation
             likely_cause="Unknown",
             operator_action="Review raw telemetry manually",
         )
+
+
+async def interpret_anomalies_parallel(
+    detections: list[DetectionResult],
+    max_concurrent: int = 10,
+) -> list[AnomalyInterpretation]:
+    """Interpret multiple anomalies concurrently with rate limiting.
+
+    Uses asyncio.Semaphore to cap concurrent OpenAI API calls.
+    """
+    import asyncio
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def rate_limited_interpret(detection: DetectionResult) -> AnomalyInterpretation:
+        async with semaphore:
+            return await interpret_anomaly(detection)
+
+    tasks = [rate_limited_interpret(d) for d in detections]
+    return await asyncio.gather(*tasks)
