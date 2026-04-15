@@ -602,8 +602,7 @@ async function loadData() {
     }
 }
 
-// Auto-refresh every 10 seconds
-setInterval(loadData, 10000);
+// Load data once (pipeline runs to completion before server starts)
 loadData();
 </script>
 </body>

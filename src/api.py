@@ -6,6 +6,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from src.models import AnomalyLogEntry
 
@@ -18,6 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+FRONTEND_PATH = Path("frontend/index.html")
 LOG_PATH = Path("logs/anomalies.jsonl")
 TELEMETRY_PATH = Path("logs/telemetry_run.json")
 
@@ -26,6 +28,12 @@ def load_anomalies() -> list[dict]:
     if not LOG_PATH.exists():
         return []
     return [json.loads(line) for line in LOG_PATH.read_text().splitlines() if line.strip()]
+
+
+@app.get("/")
+async def root():
+    """Serve the frontend dashboard."""
+    return FileResponse(FRONTEND_PATH, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/anomalies", response_model=list[AnomalyLogEntry])

@@ -139,15 +139,14 @@ def start_server():
 
     print()
     print("  Starting API server on http://localhost:8000 ...")
-    print("  Dashboard: opening frontend/index.html in browser")
+    print("  Dashboard: http://localhost:8000")
     print("  Press Ctrl+C to stop")
     print()
 
     # Open dashboard in browser after a short delay
     def open_browser():
         time.sleep(1.5)
-        dashboard_path = Path("frontend/index.html").resolve()
-        webbrowser.open(f"file://{dashboard_path}")
+        webbrowser.open("http://localhost:8000")
 
     threading.Thread(target=open_browser, daemon=True).start()
 
