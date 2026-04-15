@@ -14,13 +14,11 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your key
 
-# Run the full pipeline
+# Run everything (pipeline + API server + opens dashboard)
 python main.py
-
-# Launch the dashboard API
-uvicorn src.api:app --reload
-# Open frontend/index.html in your browser
 ```
+
+This single command runs the detection pipeline, starts the FastAPI server on `http://localhost:8000`, and opens the dashboard in your browser automatically.
 
 > **Note:** The detection pipeline works fully without an API key. Only the interpretation step requires OpenAI access — it degrades gracefully with a fallback message if unavailable.
 

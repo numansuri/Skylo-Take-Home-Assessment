@@ -1,13 +1,20 @@
-"""Entry point — runs the full anomaly detection pipeline.
+"""Entry point — runs the full anomaly detection pipeline, then starts the API server.
 
-Generates simulated satellite RAN telemetry, runs each data point through
-the deterministic detection agent, and sends confirmed anomalies to the
-LLM interpretation agent. Results are logged to logs/anomalies.jsonl.
+Single command: python main.py
+  1. Generates simulated satellite RAN telemetry
+  2. Runs detection + interpretation pipeline
+  3. Starts FastAPI server on http://localhost:8000
+  4. Opens the dashboard in your default browser
 """
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
+import threading
 import time
+import webbrowser
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -23,7 +30,8 @@ Path("logs").mkdir(exist_ok=True)
 LOG_PATH = Path("logs/anomalies.jsonl")
 
 
-async def main():
+async def run_pipeline():
+    """Run the detection + interpretation pipeline."""
     LOG_PATH.write_text("")  # Clear previous run
 
     print("=" * 55)
@@ -107,12 +115,36 @@ async def main():
     print(f"  Estimated LLM cost:   ${cost_estimate:.6f}")
     print(f"  Log file:             logs/anomalies.jsonl")
     print(f"  Telemetry file:       logs/telemetry_run.json")
-    print()
-    print("  Dashboard:")
-    print("    1. uvicorn src.api:app --reload")
-    print("    2. Open frontend/index.html in browser")
     print("=" * 55)
+
+    return anomalies_detected
+
+
+def start_server():
+    """Start the FastAPI server via uvicorn."""
+    import uvicorn
+    from src.api import app
+
+    print()
+    print("  Starting API server on http://localhost:8000 ...")
+    print("  Dashboard: opening frontend/index.html in browser")
+    print("  Press Ctrl+C to stop")
+    print()
+
+    # Open dashboard in browser after a short delay
+    def open_browser():
+        time.sleep(1.5)
+        dashboard_path = Path("frontend/index.html").resolve()
+        webbrowser.open(f"file://{dashboard_path}")
+
+    threading.Thread(target=open_browser, daemon=True).start()
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Step 1: Run the detection pipeline
+    asyncio.run(run_pipeline())
+
+    # Step 2: Start the API server + open dashboard
+    start_server()
