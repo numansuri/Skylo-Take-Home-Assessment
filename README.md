@@ -91,33 +91,79 @@ The fallback path computes everything directly in Python if the LLM call fails, 
 
 ## ML Model Design
 
-### IsolationForest — Why This Model
+### Why Unsupervised Anomaly Detection — Not Supervised Regression/Classification
 
-| Model | Pros | Cons | Verdict |
-|-------|------|------|---------|
-| **IsolationForest** | No labels needed, fast scoring, handles multivariate data, `score_samples()` gives continuous scores | Weaker on gradual drift | ✅ Best fit for unlabeled satellite telemetry |
-| One-Class SVM | Strong boundary learning | Slow on high-dimensional data, binary output, sensitive to kernel choice | ❌ Overkill for 3 features, no continuous scoring |
-| Autoencoder | Catches complex nonlinear patterns | Needs tuning, reconstruction threshold is arbitrary, requires more data | ❌ Over-engineered for 360-point demo |
+The single most important constraint is **the absence of labeled anomaly data**. In a real satellite RAN deployment, there is no historical corpus of labeled faults on day one. This makes supervised models fundamentally inapplicable.
+
+| Model Family | Why It Fails Here |
+|---|---|
+| **Random Forest Classifier / Gradient Boosting Classifier / XGBoost / CatBoost / LightGBM** | These require a target column of labels (`y`) — "anomaly" vs. "normal" for every training sample. Without labels, they literally cannot be trained. Calling `.fit(X)` without `y` raises an error. |
+| **Random Forest Regressor / Gradient Boosting Regressor** | Could theoretically be used for time-series forecasting (predict next latency, flag large residuals), but this is a fundamentally different task. It requires lagged-feature engineering, only detects univariate deviations (not multivariate correlations like latency + packet loss + RSRP degrading together), and still needs a labeled threshold for "how large a residual is anomalous." |
+| **All supervised models** | Only detect anomaly patterns present in the training set. Novel failure modes — new interference patterns, previously unseen handover failures, orbital geometry edge cases — would be missed entirely. |
+
+**Additional supervised model weaknesses in this context:**
+
+- **Cold-start problem**: You need months of expert-labeled RAN telemetry before training can begin.
+- **Class imbalance**: Anomalies are rare (typically 1–5% of observations). Supervised classifiers trained on imbalanced data tend to predict the majority class, requiring careful resampling (SMOTE, class weights) — all of which presuppose labels exist.
+- **Label ambiguity**: Even expert RAN engineers may disagree on whether a telemetry reading is "anomalous" or just "unusual but acceptable," making label quality unreliable.
+- **Validation is impossible**: Without ground truth labels, you cannot compute precision, recall, F1, or AUC-ROC — so you cannot even evaluate whether a supervised model works.
+
+IsolationForest requires **zero labels**. It learns the structure of normal data by isolation partitioning and flags points that are easy to isolate (few random splits needed) as anomalous.
+
+**References:**
+- Liu, Ting, Zhou (2008). *"Isolation Forest."* IEEE ICDM. The foundational paper establishing isolation-based anomaly detection.
+- Liu, Ting, Zhou (2012). *"Isolation-Based Anomaly Detection."* ACM TKDD 6(1). Extended journal version.
+- *"Robust IoT Security Using Isolation Forest and One Class SVM"* (Scientific Reports / Nature, 2025) — direct IF vs OC-SVM comparison for IoT telemetry.
+
+### IsolationForest vs Other Unsupervised Models
+
+| Criterion | IsolationForest | One-Class SVM | Autoencoder | DBSCAN |
+|---|---|---|---|---|
+| **Training complexity** | O(n log n) | O(n²) to O(n³) | Architecture-dependent; GPU often needed | O(n log n) with spatial index |
+| **Scoring complexity** | O(log n) per sample | O(n_sv × d) per sample | Forward pass; heavier than tree traversal | Not designed for online scoring |
+| **Hyperparameter sensitivity** | Low (contamination, n_estimators) | High (kernel, gamma, nu all interact) | High (architecture, learning rate, epochs, latent dim) | Very high (eps, min_samples; scale-sensitive) |
+| **Real-time streaming** | Excellent — single tree traversal | Moderate | Moderate | Poor — requires full dataset |
+| **Continuous scoring** | `score_samples()` — continuous | `decision_function()` — continuous | Reconstruction error — continuous | No per-point scoring |
+| **Implementation** | sklearn one-liner | sklearn one-liner but tuning is hard | Requires deep learning framework | sklearn but not for streaming |
+
+**Why IsolationForest wins:**
+
+- **One-Class SVM**: Training complexity of O(n²) to O(n³) makes it impractical for large telemetry streams. Careful kernel and gamma tuning is required, which is difficult without labeled validation data. While it *does* support continuous scoring via `decision_function()`, the computational cost at scoring time (proportional to the number of support vectors) is significantly higher than IF's tree traversal. A 2025 comparison in *Scientific Reports* (Nature) found IF achieved comparable or better detection with significantly lower computational cost for IoT security data.
+- **Autoencoders**: Require a deep learning framework (PyTorch/TensorFlow), GPU infrastructure, and extensive tuning of architecture, learning rate, epochs, and reconstruction error threshold. Over-engineered for 3 features. They excel at high-dimensional data (images, spectrograms) but add unnecessary complexity here.
+- **DBSCAN**: A clustering algorithm, not a streaming anomaly detector. It requires the entire dataset to compute clusters, cannot score individual incoming data points in real time, and is extremely sensitive to eps and min_samples parameters. A 2025 evaluation (ITM Web of Conferences) found *"Isolation Forests are most efficient at identifying collective anomalies"* with the fastest inference times among all evaluated models.
 
 ### `score_samples()` over `predict()`
 
-`predict()` returns binary {-1, 1} — anomalous or not. This loses all nuance. `score_samples()` returns a continuous anomaly score where more negative = more anomalous. This enables:
+`predict()` returns binary {-1, 1} — anomalous or not. `score_samples()` returns a continuous anomaly score where more negative = more anomalous. This enables:
 
-- **Severity tiering**: Critical (extreme IF outlier + multi-metric EWMA trigger) vs. High vs. Medium
-- **Trend analysis**: Watching scores drift toward anomalous territory before threshold breach
-- **Operator prioritization**: Sort by score to triage the worst anomalies first
+- **Severity tiering**: We normalize raw IF scores to z-scores relative to the warm-up baseline, then map to CRITICAL / HIGH / MEDIUM / LOW. Critical requires extreme IF deviation *and* multi-metric EWMA triggers; high requires strong IF deviation alone. This tiering is impossible with binary output.
+- **Flexible thresholding**: Operators can adjust sensitivity post-deployment without retraining. A NOC might want different thresholds during satellite eclipse season vs. normal operations.
+- **Operator prioritization**: Sort by score to triage the worst anomalies first.
 
-### EWMA for Drift Detection
+Per sklearn documentation: *"The anomaly score of an input sample is computed as the mean anomaly score of the trees in the forest."* The relationship is: `decision_function = score_samples - offset_`, where the offset is determined by the contamination parameter.
 
-IsolationForest is fitted on the warm-up window (first 60 points) and scores each new point independently. This makes it excellent at catching **sudden spikes** (Scenario 1: Handover Failure) but potentially blind to **slow drift** where each individual point looks reasonable.
+### EWMA — Complementary Drift Detection
 
-EWMA (Exponentially Weighted Moving Average) with span=20 maintains a rolling sense of "normal" that adapts over time. The z-score `(current - ewma_mean) / ewma_std` catches Scenario 2 (Congestion Drift) because the gradual packet loss increase eventually deviates from the EWMA baseline by > 2.5σ, even though each point alone might not trigger the IsolationForest.
+IsolationForest is fitted on the warm-up window (first 60 points) and scores each new point independently against the learned normal distribution. It excels at catching **multivariate outliers** — data points that sit far from the training distribution in feature space.
 
-**The two methods are complementary**: IF catches abrupt multivariate outliers, EWMA catches slow univariate drift. Together they cover both failure modes seen in real satellite RAN operations.
+EWMA (Exponentially Weighted Moving Average) with span=20 provides a complementary signal. It maintains a rolling sense of "recent normal" that adapts over time, computing per-metric z-scores: `(current - ewma_mean) / ewma_std`. This is designed to catch **gradual univariate drift** that the IF might miss if each individual point remains within the broadly normal region of feature space.
+
+**In practice on our simulated data:**
+- **Handover Failure (Scenario 1):** IF dominates detection. The abrupt, correlated spike across all three metrics creates extreme IF outliers (z-score < -5.0). EWMA triggers on the first handover point (all 3 metrics exceed 2.5σ) before adapting to the sustained anomaly. This first-point EWMA signal is what enables the CRITICAL severity classification — it requires both extreme IF score AND multi-metric EWMA trigger.
+- **Congestion Drift (Scenario 2):** IF also dominates here because the drift magnitude (latency 500→900ms, packet loss 0.3→9%) is large enough relative to the training distribution to produce strong IF outliers. EWMA z-scores remain below the 2.5σ trigger because the EWMA mean adapts as the drift progresses — this is both a feature (reducing false alarms during gradual shifts) and a limitation (not triggering independent alarms for slow drift when IF already catches it).
+
+**The two methods are architecturally complementary**: IF catches multivariate outliers (both abrupt and cumulative), EWMA provides per-metric z-scores for severity classification and would independently catch drift patterns that remain within IF's normal region. Together, they enable richer severity tiering than either alone.
 
 ### `contamination=0.05` Rationale
 
-In satellite RAN telemetry, ~5% anomaly rate is realistic for a 30-minute window that includes a handover event and a congestion period. Setting contamination too low (0.01) would miss the tail of drift scenarios; too high (0.10) would generate excessive false positives that desensitize operators — the "alert fatigue" problem that plagues real NOCs.
+The `contamination` parameter sets the expected proportion of outliers in the training data, which determines the internal `offset_` threshold used by `predict()`. Since our code uses `score_samples()` with custom z-score normalization and its own thresholds (normalized IF score < -2.5), the contamination parameter's primary effect is on model fitting — specifically, how the isolation trees partition the feature space.
+
+Why 0.05:
+- **Conservative prior**: In satellite RAN telemetry, anomalous readings (degraded but not failed) are expected at roughly 1–5% during normal operations due to handover events, atmospheric interference, and orbital transitions.
+- **Operational balance**: Too low (0.01) makes the model overly focused on extreme outliers; too high (0.10) dilutes the normal distribution and risks desensitizing the model. 5% provides a practical middle ground.
+- **Research-supported**: Deep learning anomaly detection studies show performance degradation increases significantly above ~10% contamination (arXiv, 2024).
+
+**Actual detection rate**: On our simulated data with two injected anomaly scenarios, the pipeline detects ~67 anomalies (~18.6% of 360 points). This is higher than the 5% contamination parameter because: (a) both injected scenarios are severe and sustained, and (b) our detection threshold uses custom z-score normalization rather than the contamination-derived offset.
 
 ## Anomaly Scenarios — RAN-Grounded Definitions
 
@@ -132,6 +178,8 @@ In satellite RAN telemetry, ~5% anomaly rate is realistic for a 30-minute window
 
 The multi-metric correlation is the key discriminator: all three degrade together because the root cause (lost beam lock) affects the entire radio link simultaneously.
 
+**Detection behavior:** IF produces extreme outlier scores (normalized z < -5.0). The first point also triggers all three EWMA metrics (> 2.5σ), enabling CRITICAL severity classification. Subsequent points in the window are classified HIGH (IF-only, as EWMA adapts to the sustained anomaly).
+
 ### Scenario 2: Congestion Drift (t=250 to t=290)
 
 **Signature:** Gradual packet loss increase (0.3% → 6–9%) and latency creep (500ms → 900ms) over 40 time steps, with **RSRP remaining normal**.
@@ -142,6 +190,12 @@ The multi-metric correlation is the key discriminator: all three degrade togethe
 - **Buffer bloat** — increasing queuing delay as buffers fill
 
 This pattern is critical to detect because operators might ignore it (no signal degradation = "radio is fine") while user experience degrades significantly.
+
+**Detection behavior:** Despite being a gradual drift, the cumulative deviation from the warm-up baseline is large enough for IF to flag these as strong outliers (normalized z < -4.0). Points are classified HIGH severity. EWMA z-scores remain below 2.5σ because the EWMA mean tracks the drift — this is expected behavior for a slow-burn scenario where each incremental step is small.
+
+**References:**
+- *"FALCON: A Framework for Fault Prediction in Open RAN Using Multi-Level Telemetry"* (arXiv, 2025) — directly relevant to multi-metric RAN anomaly detection.
+- *"Enhancing Satellite Telemetry Monitoring with Machine Learning"* (Springer, 2025) — evaluated IsolationForest among other methods for satellite telemetry.
 
 ## Agents SDK Design Rationale
 
@@ -180,11 +234,13 @@ The Agents SDK adds ~50–100ms overhead per detection call (HTTP round-trip to 
 |-----------|------|
 | **Detection path** | **$0.00** — pure sklearn + pandas, no API calls |
 | **Interpretation path** | ~200 input tokens × $0.75/1M tokens = **$0.00015 per anomaly** |
-| **Per run** (360 points, ~5% anomaly rate = ~18 anomalies) | **$0.0027** |
-| **Production scale** (1M points/day, 5% anomaly rate) | 50,000 anomalies × $0.00015 = **~$7.50/day** |
-| **Production scale** (10M points/day) | **~$75/day** |
+| **Per run** (360 points, ~67 anomalies detected) | 67 × $0.00015 = **$0.010** |
+| **Production scale** (1M points/day, ~18% detection rate) | 180,000 anomalies × $0.00015 = **~$27/day** |
+| **Production scale** (10M points/day) | **~$270/day** |
 
-The key insight: detection costs scale with data volume at $0. Interpretation costs scale only with anomaly count, which is a small fraction of total data points.
+> **Note:** The ~18% detection rate reflects our simulated data which includes two sustained anomaly scenarios (handover failure + congestion drift). In production with predominantly normal telemetry, the anomaly rate would be closer to 1–5%, significantly reducing interpretation costs. At a 5% production anomaly rate: 1M points/day → ~$7.50/day.
+
+The key insight: detection costs scale with data volume at $0. Interpretation costs scale only with anomaly count, which is a fraction of total data points.
 
 ## Project Structure
 
