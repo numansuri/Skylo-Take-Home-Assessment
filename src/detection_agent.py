@@ -161,9 +161,7 @@ class DetectionAgent:
     async def process_single(self, row: dict) -> DetectionResult:
         """Process a single telemetry data point through the detection pipeline.
 
-        Uses the Agents SDK to orchestrate tool calls, but all computation
-        is deterministic (sklearn + pandas). Falls back to direct computation
-        if the LLM call fails.
+        All computation is deterministic (sklearn + pandas). No LLM calls.
         """
         timestamp = row["timestamp"]
         latency = float(row["latency_ms"])
@@ -213,29 +211,16 @@ class DetectionAgent:
         if abs(zscores["rsrp_dbm"]) > 2.5:
             triggered.append("rsrp_dbm")
 
-        try:
-            # Try using the Agents SDK for orchestration
-            input_text = (
-                f"Analyze telemetry data point:\n"
-                f"timestamp: {timestamp}\n"
-                f"latency_ms: {latency}, packet_loss_pct: {packet_loss}, rsrp_dbm: {rsrp}\n"
-                f"EWMA state: {json.dumps(ewma_states)}\n"
-                f"Use the tools to compute isolation score, EWMA z-scores, and severity."
-            )
-            result = await Runner.run(detection_agent, input=input_text)
-            return result.final_output
-        except Exception:
-            # Fallback: return deterministic result directly (no LLM needed)
-            return DetectionResult(
-                timestamp=timestamp,
-                latency_ms=latency,
-                packet_loss_pct=packet_loss,
-                rsrp_dbm=rsrp,
-                isolation_score=round(iso_score, 6),
-                ewma_zscore_latency=zscores["latency_ms"],
-                ewma_zscore_packet_loss=zscores["packet_loss_pct"],
-                ewma_zscore_rsrp=zscores["rsrp_dbm"],
-                is_anomaly=is_anomaly,
-                severity=severity,
-                triggered_metrics=triggered,
-            )
+        return DetectionResult(
+            timestamp=timestamp,
+            latency_ms=latency,
+            packet_loss_pct=packet_loss,
+            rsrp_dbm=rsrp,
+            isolation_score=round(iso_score, 6),
+            ewma_zscore_latency=zscores["latency_ms"],
+            ewma_zscore_packet_loss=zscores["packet_loss_pct"],
+            ewma_zscore_rsrp=zscores["rsrp_dbm"],
+            is_anomaly=is_anomaly,
+            severity=severity,
+            triggered_metrics=triggered,
+        )
