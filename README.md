@@ -222,7 +222,7 @@ This pattern is critical to detect because operators might ignore it (no signal 
 
 ## OpenAI Agents SDK Usage
 
-The Agents SDK is used **only for interpretation** — not for detection.
+The system is a **hybrid architecture**: deterministic ML for detection, agentic LLM for interpretation. The Agents SDK dependency is real and load-bearing — it's scoped to where LLM reasoning actually adds value. Detection doesn't need an LLM (the math is deterministic), but translating anomaly signatures into actionable operator language is exactly what an agent excels at.
 
 ### InterpretationAgent
 
